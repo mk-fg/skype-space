@@ -11,17 +11,35 @@ usage() {
 [[ "$#" -gt 1 || ( -n "$1" && "$1" != '--debug' ) ]] && usage
 [[ -n "$1" ]] && debug=true || debug=
 
+skype_src=/opt/skype
+[[ -e "$skype_src" ]] || skype_src=/usr/share/skype
+[[ -e "$skype_src" ]] || { echo >&2 'Failed to find skype root'; exit 1; }
+
+skype_bin="$skype_src"/skype
+file --brief --mime-type "${skype_bin}" |
+	grep -q x-executable || skype_bin=/usr/bin/skype
+file --brief --mime-type "${skype_bin}" |
+	grep -q x-executable || { echo >&2 'Failed to find skype binary'; exit 1; }
+
 echo "Building skype-env in: $dir"
+
 echo " - cleanup"
 rm -rf "$dir"
+
 echo " - copying skype"
-cp -R /opt/skype "$dir"
+cp -R "${skype_src}" "$dir"
+
+[[ -d "$dir"/skype ]] && { echo >&2 "WTF: ${dir}/skype"; exit 1; }
+cp "${skype_bin}" "$dir"/skype
+
 
 echo " - copying dependency libs"
 lib="$dir"
 cp_deps() {
 	ldd "$1" |
-	awk '$3 {print $3; next} match($1,/^\//) {print $1}' |
+	awk '/linux-gate/ {next}
+		$3 {print $3; next}
+		match($1,/^\//) {print $1}' |
 	while read dep
 	do
 		[[ -e "$lib"/"$(basename "$dep")" ]] && continue
