@@ -41,7 +41,7 @@ class NSControl(object):
 			static int ns_clone(int (*fn)(void *)) {{
 				int child_pid = clone( fn,
 					stack + {stack_size},
-					CLONE_NEWUTS | SIGCHLD, NULL );
+					CLONE_NEWNS | SIGCHLD, NULL );
 				return child_pid;
 			}}
 		'''.format(stack_size=1 * 2**20)) # 1 MiB
@@ -64,8 +64,10 @@ class NSControl(object):
 
 
 def ns_main():
-	print('waka waka')
+	print('TODO: chroot, proper ns list, etc')
 
+	# Just exec skype
+	# os.execl('/skype', '--resources=/')
 
 def main(argz=None):
 	import argparse
@@ -88,15 +90,15 @@ def main(argz=None):
 			capng.CAP_SYS_ADMIN )
 		assert not capng.capng_apply(capng.CAPNG_SELECT_CAPS)
 	except (OSError, AssertionError) as err:
-		log.fatal('Failed to enable necessary capabilities: {}'.format(err))
-		sys.exit(1)
+		raise OSError('Failed to enable necessary capabilities: {}'.format(err))
 	else:
 		log.debug('Capabilities enabled: {}'.format(
 			capng.capng_print_caps_text(
 				capng.CAPNG_PRINT_BUFFER, capng.CAPNG_EFFECTIVE ) ))
 
-	# Start the namespace
-	nsc.clone()
+	# Start the namespaced skype
+	os.waitpid(nsc.clone(), 0)
+	log.debug('Finished')
 
 
 if __name__ == '__main__': main()
