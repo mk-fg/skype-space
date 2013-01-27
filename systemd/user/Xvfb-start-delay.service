@@ -1,0 +1,7 @@
+[Unit]
+After=Xvfb.service
+Before=X.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sleep 2

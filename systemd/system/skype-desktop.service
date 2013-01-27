@@ -1,0 +1,13 @@
+[Unit]
+After=network.target
+
+[Service]
+User=skype
+PAMName=login
+Type=notify
+Environment=DISPLAY=:1
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%h/tmp/session_bus_socket
+ExecStart=/usr/lib/systemd/systemd --user
+
+[Install]
+WantedBy=multi-user.target
