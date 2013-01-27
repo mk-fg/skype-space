@@ -1,6 +1,3 @@
-[Unit]
-After=network.target
-
 [Service]
 User=skype
 PAMName=login
