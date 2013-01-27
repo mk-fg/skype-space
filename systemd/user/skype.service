@@ -1,0 +1,5 @@
+[Service]
+SyslogIdentifier=%p
+Environment=LD_LIBRARY_PATH=%h/skype_env
+Environment=ALSA_CONFIG_PATH=%h/asound.conf
+ExecStart=/usr/bin/env %h/skype_env/skype --resources=%h/skype_env
