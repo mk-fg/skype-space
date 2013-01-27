@@ -2,4 +2,4 @@
 After=X.target
 
 [Service]
-ExecStart=/usr/bin/x11vnc -display $DISPLAY -nopw -listen localhost
+ExecStart=/usr/bin/x11vnc -display $DISPLAY -nopw -listen localhost -forever
