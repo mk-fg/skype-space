@@ -1,0 +1,8 @@
+[Unit]
+Requires=skype.service
+After=skype.service
+
+[Service]
+SyslogIdentifier=%p
+KillSignal=SIGINT
+ExecStart=/usr/bin/env %h/skyped/skyped -n -c %h/skyped/skyped.conf
