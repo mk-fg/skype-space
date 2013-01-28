@@ -4,6 +4,7 @@
 
 	#include <abstractions/base>
 	#include <abstractions/user-tmp>
+	#include <abstractions/user-download>
 	#include <abstractions/nameservice>
 	#include <abstractions/ssl_certs>
 	#include <abstractions/fonts>
@@ -28,6 +29,9 @@
 	owner @{HOME}/.Skype/** krw,
 	owner @{HOME}/.config/Skype/ rw,
 	owner @{HOME}/.config/Skype/** krw,
+
+	# Skype locks files
+	owner @{HOME}/[dD]ownload{,s}/** k,
 
 	deny @{HOME}/.mozilla/ r, # no idea what it needs there
 	deny @{PROC}/[0-9]*/fd/ r,
