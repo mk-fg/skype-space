@@ -340,42 +340,6 @@ class SkypeApi:
 		except Skype4Py.SkypeAPIError, s:
 			dprint("Warning, sending '%s' failed (%s)." % (e, s))
 
-class Options:
-	def __init__(self):
-		self.cfgpath = os.path.join(os.environ['HOME'], ".skyped", "skyped.conf")
-		# fall back to system-wide settings
-		self.syscfgpath = "/usr/local/etc/skyped/skyped.conf"
-		if os.path.exists(self.syscfgpath) and not os.path.exists(self.cfgpath):
-			self.cfgpath = self.syscfgpath
-		self.daemon = True
-		self.debug = False
-		self.help = False
-		self.host = "0.0.0.0"
-		self.log = None
-		self.port = None
-		self.version = False
-		# well, this is a bit hackish. we store the socket of the last connected client
-		# here and notify it. maybe later notify all connected clients?
-		self.conn = None
-		# this will be read first by the input handler
-		self.buf = None
-
-
-	def usage(self, ret):
-		print """Usage: skyped [OPTION]...
-
-skyped is a daemon that acts as a tcp server on top of a Skype instance.
-
-Options:
-	-c      --config        path to configuration file (default: %s)
-	-d	--debug		enable debug messages
-	-h	--help		this help
-	-H	--host		set the tcp host, supports IPv4 and IPv6 (default: %s)
-	-l      --log           set the log file in background mode (default: none)
-	-n	--nofork	don't run as daemon in the background
-	-p	--port		set the tcp port (default: %s)
-	-v	--version	display version information""" % (self.cfgpath, self.host, self.port)
-		sys.exit(ret)
 
 def serverloop(options, skype):
 	timeout = 1; # in seconds
@@ -418,58 +382,65 @@ def serverloop(options, skype):
 			else:
 				options.last_bitlbee_pong = now
 
-if __name__=='__main__':
-	options = Options()
-	try:
-		opts, args = getopt.getopt(sys.argv[1:], "c:dhH:l:np:v", ["config=", "debug", "help", "host=", "log=", "nofork", "port=", "version"])
-	except getopt.GetoptError:
-		options.usage(1)
-	for opt, arg in opts:
-		if opt in ("-c", "--config"):
-			options.cfgpath = arg
-		elif opt in ("-d", "--debug"):
-			options.debug = True
-		elif opt in ("-h", "--help"):
-			options.help = True
-		elif opt in ("-H", "--host"):
-			options.host = arg
-		elif opt in ("-l", "--log"):
-			options.log = arg
-		elif opt in ("-n", "--nofork"):
-			options.daemon = False
-		elif opt in ("-p", "--port"):
-			options.port = int(arg)
-		elif opt in ("-v", "--version"):
-			options.version = True
-	if options.help:
-		options.usage(0)
-	elif options.version:
-		print "skyped %s" % __version__
-		sys.exit(0)
-	# parse our config
-	if not os.path.exists(options.cfgpath):
-		print "Can't find configuration file at '%s'." % options.cfgpath
-		print "Use the -c option to specify an alternate one."
-		sys.exit(1)
+
+def main(args=None):
+	global options
+	global skype
+
+	cfgpath = os.path.join(os.environ['HOME'], ".skyped", "skyped.conf")
+	syscfgpath = "/usr/local/etc/skyped/skyped.conf"
+	if not os.path.exists(cfgpath) and os.path.exists(syscfgpath):
+		cfgpath = syscfgpath # fall back to system-wide settings
+	port = 2727
+
+	import argparse
+	parser = argparse.ArgumentParser()
+	parser.add_argument('-c', '--config',
+		metavar='path', default=cfgpath,
+		help='path to configuration file (default: %(default)s)')
+	parser.add_argument('-H', '--host', default='0.0.0.0',
+		help='set the tcp host, supports IPv4 and IPv6 (default: %(default)s)')
+	parser.add_argument('-p', '--port', type=int,
+		help='set the tcp port (default: %(default)s)')
+	parser.add_argument('-l', '--log', metavar='path',
+		help='set the log file in background mode (default: none)')
+	parser.add_argument('-v', '--version', action='store_true', help='display version information')
+	parser.add_argument('-n', '--nofork',
+		action='store_true', help="don't run as daemon in the background")
+	parser.add_argument('-d', '--debug', action='store_true', help='enable debug messages')
+	options = parser.parse_args(sys.argv[1:] if args is None else args)
+
+	# well, this is a bit hackish. we store the socket of the last connected client
+	# here and notify it. maybe later notify all connected clients?
+	options.conn = None
+	# this will be read first by the input handler
+	options.buf = None
+
+	if not os.path.exists(options.config):
+		parser.error(( "Can't find configuration file at '%s'."
+			"Use the -c option to specify an alternate one." )% options.config)
+
+	cfgpath = options.config
 	options.config = ConfigParser()
-	options.config.read(options.cfgpath)
-	options.config.username = options.config.get('skyped', 'username').split('#')[0]
-	options.config.password = options.config.get('skyped', 'password').split('#')[0]
-	options.config.sslkey = os.path.expanduser(options.config.get('skyped', 'key').split('#')[0])
-	options.config.sslcert = os.path.expanduser(options.config.get('skyped', 'cert').split('#')[0])
+	options.config.read(cfgpath)
+	options.config.username = options.config.get('skyped', 'username').split('#', 1)[0]
+	options.config.password = options.config.get('skyped', 'password').split('#', 1)[0]
+	options.config.sslkey = os.path.expanduser(options.config.get('skyped', 'key').split('#', 1)[0])
+	options.config.sslcert = os.path.expanduser(options.config.get('skyped', 'cert').split('#', 1)[0])
+
 	# hack: we have to parse the parameters first to locate the
 	# config file but the -p option should overwrite the value from
 	# the config file
 	try:
-		options.config.port = int(options.config.get('skyped', 'port').split('#')[0])
+		options.config.port = int(options.config.get('skyped', 'port').split('#', 1)[0])
 		if not options.port:
 			options.port = options.config.port
 	except NoOptionError:
 		pass
 	if not options.port:
-		options.port = 2727
-	dprint("Parsing config file '%s' done, username is '%s'." % (options.cfgpath, options.config.username))
-	if options.daemon:
+		options.port = port
+	dprint("Parsing config file '%s' done, username is '%s'." % (options.config, options.config.username))
+	if not options.nofork:
 		pid = os.fork()
 		if pid == 0:
 			nullin = file(os.devnull, 'r')
@@ -497,3 +468,6 @@ if __name__=='__main__':
 			options.conn = False
 			options.lock = threading.Lock()
 			server(options.host, options.port, skype)
+
+
+if __name__ == '__main__': main()
