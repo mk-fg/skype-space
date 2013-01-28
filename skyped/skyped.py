@@ -276,9 +276,12 @@ def dprint(msg):
 
 class SkypeApi:
 	def __init__(self):
+		global options
 		self.skype = Skype4Py.Skype()
 		self.skype.OnNotify = self.recv
-		self.skype.Client.Start()
+		if not options.dont_start_skype:
+			self.skype.Client.Start()
+
 
 	def recv(self, msg_text):
 		global options
@@ -406,6 +409,8 @@ def main(args=None):
 	parser.add_argument('-v', '--version', action='store_true', help='display version information')
 	parser.add_argument('-n', '--nofork',
 		action='store_true', help="don't run as daemon in the background")
+	parser.add_argument('-s', '--dont-start-skype',
+		action='store_true', help="assume that skype is running, don't try to start it")
 	parser.add_argument('-d', '--debug', action='store_true', help='enable debug messages')
 	options = parser.parse_args(sys.argv[1:] if args is None else args)
 
