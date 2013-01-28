@@ -1,8 +1,10 @@
 [Unit]
-Requires=skype.service
+BindsTo=skype.service
 After=skype.service
 
 [Service]
 SyslogIdentifier=%p
 KillSignal=SIGINT
-ExecStart=/usr/bin/env %h/skyped/skyped -n -c %h/skyped/skyped.conf
+Restart=always
+RestartSec=5s
+ExecStart=/usr/bin/env %h/skyped/skyped -ns -c %h/skyped/skyped.conf
