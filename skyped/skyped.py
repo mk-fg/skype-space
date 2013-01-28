@@ -124,12 +124,12 @@ def skype_idle_handler(skype):
 		time.sleep(1)
 	return True
 
-def send(sock, txt, tries=10):
+def send(txt, tries=10):
 	global options
 	if hasgobject:
 		for attempt in xrange(1, tries+1):
 			try:
-				sock.sendall(txt)
+				options.conn.sendall(txt)
 			except Exception, s:
 				dprint("Warning, sending '%s' failed (%s). count=%d" % (txt, s, attempt))
 				time.sleep(1)
@@ -142,7 +142,7 @@ def send(sock, txt, tries=10):
 			if not options.conn: break
 			if wait_for_lock(options.lock, 3, 10, "socket send"):
 				try:
-					 if options.conn: sock.sendall(txt)
+					 if options.conn: options.conn.sendall(txt)
 					 options.lock.release()
 				except Exception, s:
 					options.lock.release()
@@ -162,7 +162,7 @@ def bitlbee_idle_handler(skype):
 	if options.conn:
 		try:
 			e = "PING"
-			done = send(options.conn, "%s\n" % e)
+			done = send("%s\n" % e)
 		except Exception, s:
 			dprint("Warning, sending '%s' failed (%s)." % (e, s))
 			if hasgobject:
@@ -233,7 +233,7 @@ def listener(sock, skype):
 		return False
 	if ret == 2:
 		dprint("Username and password OK.")
-		options.conn.send("PASSWORD OK\n")
+		send("PASSWORD OK\n")
 		if hasgobject:
 			gobject.io_add_watch(options.conn, gobject.IO_IN, input_handler)
 		else:
@@ -242,7 +242,7 @@ def listener(sock, skype):
 		return True
 	else:
 		dprint("Username and/or password WRONG.")
-		options.conn.send("PASSWORD KO\n")
+		send("PASSWORD KO\n")
 		if not hasgobject:
 			options.conn.close()
 			options.conn = False
@@ -306,7 +306,7 @@ class SkypeApi:
 			if options.conn:
 				dprint('<< ' + e)
 				try:
-					send(options.conn, e + "\n")
+					send(e + "\n")
 				except Exception, s:
 					dprint("Warning, sending '%s' failed (%s)." % (e, s))
 					if options.conn: options.conn.close()
