@@ -65,6 +65,7 @@ class SkypeProxy(object):
 
 
 	def trace(self, msg, *args, **kw):
+		if not self.conf.logging.net_debug: return
 		self.log.debug('conn[{}] {}'.format(self.conn_state, msg.format(*args, **kw)))
 
 	def get_socket_info(self):
@@ -470,7 +471,7 @@ def main(args=None):
 
 	## Logging
 	lya.configure_logging( cfg.logging,
-		logging.DEBUG if opts.debug else logging.INFO )
+		logging.DEBUG if opts.debug else logging.WARNING )
 	log = logging.getLogger('skyped.main')
 
 	## Process CLI overrides

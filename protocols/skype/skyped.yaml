@@ -29,12 +29,12 @@ logging: # see http://docs.python.org/library/logging.config.html
       level: custom
     # debug_logfile:
     #   class: logging.handlers.RotatingFileHandler
-    #   filename: /srv/backups/debug.log
+    #   filename: /home/YOUR_USER/.skyped/debug.log
     #   formatter: basic
     #   encoding: utf-8
     #   maxBytes: 5242880 # 5 MiB
     #   backupCount: 2
-    #   level: NOISE
+    #   level: DEBUG
   # loggers:
   #   skyped.api:
   #     handlers: [console]
