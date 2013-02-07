@@ -30,6 +30,7 @@ import os, sys, logging, socket, ssl, hashlib
 
 import gobject
 import Skype4Py
+import lya
 
 __version__ = 'gobject-1'
 
@@ -51,19 +52,20 @@ class SkypeProxy(object):
 	class SetupError(Exception): pass
 
 
-	def __init__(self, options):
-		self.opts = options
-		self.skype_api = SkypeAPI(options, self.dispatch)
+	def __init__(self, conf, **api_opts):
+		self.conf = conf
+		self.skype_api = SkypeAPI(self.dispatch, **api_opts)
 		self.log = logging.getLogger('skyped.loop')
 
 
 	def get_socket_info(self):
 		'Return best-match (address-family, address, port) for configuration.'
 		addrinfo = socket.getaddrinfo(
-			self.opts.host, self.opts.port, 0, 0, socket.SOL_TCP)
+			self.conf.listen.host, self.conf.listen.port, 0, 0, socket.SOL_TCP)
 
 		if not addrinfo:
-			self.log.fatal('Failed to match host to a socket address: {}'.format(self.opts.host))
+			self.log.fatal( 'Failed to match host to'
+				' a socket address: {}'.format(self.conf.listen.host) )
 			raise SetupError
 
 		ai_af, ai_addr = set(), list()
@@ -93,7 +95,7 @@ class SkypeProxy(object):
 			self.log.warn( 'Specified host matches more than'
 				' one address ({}), using first one: {}'.format(ai_addr, addr) )
 
-		return af, addr, self.opts.port
+		return af, addr, self.conf.listen.port
 
 
 	def bind(self):
@@ -118,8 +120,8 @@ class SkypeProxy(object):
 				sock_raw,
 				server_side=True,
 				do_handshake_on_connect=True,
-				certfile=self.opts.config.sslcert,
-				keyfile=self.opts.config.sslkey,
+				certfile=self.conf.listen.cert,
+				keyfile=self.conf.listen.key,
 				ssl_version=ssl.PROTOCOL_TLSv1 )
 		except ssl.SSLError as err:
 			self.log.warn('TLS socket wrapping failed (did you create your certificate?)')
@@ -171,6 +173,7 @@ class SkypeProxy(object):
 		if self.conn:
 			self.log.info('Closing connection to client: {}'.format(self.conn_addr))
 			self.conn.close()
+		for ev, handle in self.events.items(): self.unbind_ev(ev, handle)
 		self.conn = self.conn_addr = None
 		self.conn_state = self.conn_auth_user = self.conn_buff = None
 		return False
@@ -231,19 +234,22 @@ class SkypeProxy(object):
 		return True
 
 
-	def handle_client_auth(self, buff):
-		# Assume skype.so plugin sends exactly two chunks with len=1024 with auth data
-		# This auth has timing side-channel due to "==" string comparisons
+	def handle_client_auth(self, lines):
+		# This auth has timing side-channel due to "==" string comparisons and py
 		# TODO: drop this authentication if favor of TLS auth
 		if not self.conn_auth_user:
-			self.conn_auth_user = buff
-			return True
-		else:
-			pw_hash = hashlib.sha1(buff.split(' ', 2)[1].strip()).hexdigest()
-			if not all([
-					self.conn_auth_user.startswith('USERNAME')\
-						and self.conn_auth_user.split(' ', 2)[1].strip() == self.opts.config.username,
-					buff.startswith('PASSWORD') and pw_hash == self.opts.config.password ]):
+			self.conn_auth_user, lines = lines[0], lines[1:]
+			if not lines: return
+		if self.conn_auth_user:
+			pw_hash = hashlib.sha1(lines[0].split(' ', 2)[1].strip()).hexdigest()
+			auth_checks = [
+				self.conn_auth_user.startswith('USERNAME'),
+				self.conn_auth_user.startswith('USERNAME')\
+					and self.conn_auth_user.split(' ', 2)[1].strip() == self.conf.auth.username,
+				lines[0].startswith('PASSWORD'),
+				lines[0].startswith('PASSWORD') and pw_hash == self.conf.auth.password ]
+			if not all(auth_checks):
+				# self.log.debug('Auth checks: {}'.format(auth_checks))
 				self.log.error('Client authentication FAILED.')
 				self.conn_state = 'close'
 				self.dispatch('PASSWORD KO\n')
@@ -309,13 +315,13 @@ class MockedSkype(object):
 
 class SkypeAPI(object):
 
-	def __init__(self, options, relay):
-		if not options.mock:
+	def __init__(self, relay, mock=False, dont_start_skype=False):
+		if not mock:
 			self.skype = Skype4Py.Skype()
 			self.skype.OnNotify = self.recv
-			if not options.dont_start_skype: self.skype.Client.Start()
-		else: self.skype = MockedSkype(options.mock)
-		self.opts = options
+			if not dont_start_skype: self.skype.Client.Start()
+		else: self.skype = MockedSkype(mock)
+		self.mock, self.dont_start_skype = mock, dont_start_skype
 		self.relay = relay
 		self.log = logging.getLogger('skyped.api')
 
@@ -359,81 +365,52 @@ class SkypeAPI(object):
 			self.log.warn('Failed sending ping: {}'.format(err))
 
 	def stop(self):
-		if not self.opts.mock and not self.opts.dont_start_skype:
+		if not self.mock and not self.dont_start_skype:
 			self.skype.Client.Shutdown()
 
 
 def main(args=None):
-	cfgpath = join(os.environ['HOME'], '.skyped', 'skyped.conf')
-	syscfgpath = '/usr/local/etc/skyped/skyped.conf'
-	if not exists(cfgpath) and exists(syscfgpath):
-		cfgpath = syscfgpath # fall back to system-wide settings
-	port = 2727
-
 	import argparse
 	parser = argparse.ArgumentParser()
 	parser.add_argument('-c', '--config',
-		metavar='path', default=cfgpath,
-		help='path to configuration file (default: %(default)s)')
-	parser.add_argument('-H', '--host', default='0.0.0.0',
+		action='append', metavar='path', default=list(),
+		help='Configuration files to process.'
+			' Can be specified more than once.'
+			' Values from the latter ones override values in the former.'
+			' Available CLI options override the values in any config.')
+	parser.add_argument('-H', '--host',
 		help='set the tcp host, supports IPv4 and IPv6 (default: %(default)s)')
-	parser.add_argument('-p', '--port', type=int,
-		help='set the tcp port (default: %(default)s)')
-	parser.add_argument('-l', '--log', metavar='path',
-		help='set the log file in background mode (default: none)')
+	parser.add_argument('-p', '--port', type=int, help='set the tcp port')
 	parser.add_argument('-v', '--version', action='store_true', help='display version information')
-	parser.add_argument('-n', '--nofork',
-		action='store_true', help="don't run as daemon in the background")
 	parser.add_argument('-s', '--dont-start-skype', action='store_true',
 		help="assume that skype is running independently, don't try to start/stop it")
 	parser.add_argument('-m', '--mock', help='fake interactions with skype (only useful for tests)')
 	parser.add_argument('-d', '--debug', action='store_true', help='enable debug messages')
 	opts = parser.parse_args(sys.argv[1:] if args is None else args)
 
-	logging.basicConfig(level=logging.DEBUG if opts.debug else logging.INFO)
-	log = logging.getLogger('skyped.main')
-
 	if opts.version:
 		print('skyped {}'.format(__version__))
 		return
 
-	cfgpath = opts.config
-	if not exists(cfgpath):
-		parser.error(( 'Unable to find configuration file at {!r}.'
-			' Use the -c option to specify an alternate one.' ).format(cfgpath))
+	## Read configuration
+	cfg = lya.AttrDict.from_yaml('{}.yaml'.format(
+		os.path.splitext(os.path.realpath(__file__))[0] ))
+	for k in opts.config: cfg.update_yaml(k)
+	if cfg: cfg.update_dict(cfg)
 
-	conf = opts.config = ConfigParser()
-	conf.read(cfgpath)
-	conf.username = conf.get('skyped', 'username').split('#', 1)[0]
-	conf.password = conf.get('skyped', 'password').split('#', 1)[0]
-	conf.sslkey = expanduser(conf.get('skyped', 'key').split('#', 1)[0])
-	conf.sslcert = expanduser(conf.get('skyped', 'cert').split('#', 1)[0])
+	## Logging
+	lya.configure_logging( cfg.logging,
+		logging.DEBUG if opts.debug else logging.INFO )
+	log = logging.getLogger('skyped.main')
 
+	## Process CLI overrides
+	if opts.host: cfg.listen.host = opts.host
+	if opts.port: cfg.listen.port = opts.port
+
+	## Start the thing
 	try:
-		conf.port = int(conf.get('skyped', 'port').split('#', 1)[0])
-		if not opts.port: opts.port = conf.port
-	except NoOptionError: pass
-	if not opts.port: opts.port = port
-
-	log.debug(
-		'Processed config file ({}), username: {}'\
-		.format(cfgpath, conf.username) )
-
-	if not opts.nofork:
-		# TODO: proper forking - wait for child to start listening
-		pid = os.fork()
-		if not pid:
-			nullin = open(os.devnull, 'r')
-			nullout = open(os.devnull, 'w')
-			os.dup2(nullin.fileno(), sys.stdin.fileno())
-			os.dup2(nullout.fileno(), sys.stdout.fileno())
-			os.dup2(nullout.fileno(), sys.stderr.fileno())
-		else:
-			log.info('skyped is started on port {}, pid: {}'.format(opts.port, pid)) # no it's not
-			return
-
-	try:
-		server = SkypeProxy(opts)
+		server = SkypeProxy( cfg,
+			mock=opts.mock, dont_start_skype=opts.dont_start_skype )
 		server.bind()
 	except SkypeProxy.SetupError: return
 
@@ -444,10 +421,9 @@ def main(args=None):
 		else: code = 0
 		server.stop()
 		sys.exit(code)
-
 	sys.excepthook = excepthook
 
-	log.info('skyped is started on port {}'.format(opts.port))
+	log.info('skyped is started')
 	server.run()
 
 

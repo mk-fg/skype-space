@@ -1,0 +1,44 @@
+auth:
+  # This auth data is for bitlbee connecting to skyped
+  # Name does not have to be related in any way to skype name
+  username: alice
+  # Use `echo -n foo|sha1sum` to generate this hash for your password
+  password: 0beec7b5ea3f0fdbc95d0dd47f3c5bc275da8a33
+
+listen:
+  host: localhost
+  port: 2727
+  cert: /home/YOUR_USER/.skyped/skyped.cert.pem
+  key: /home/YOUR_USER/.skyped/skyped.key.pem
+
+logging: # see http://docs.python.org/library/logging.config.html
+  # "custom" level means WARNING/DEBUG, depending on CLI options
+  warnings: true # capture python warnings
+  net_debug: false # log all recv/send buffers - very noisy
+
+  version: 1
+  formatters:
+    basic:
+      format: '%(asctime)s :: %(name)s :: %(levelname)s: %(message)s'
+      datefmt: '%Y-%m-%d %H:%M:%S'
+  handlers:
+    console:
+      class: logging.StreamHandler
+      stream: ext://sys.stderr
+      formatter: basic
+      level: custom
+    # debug_logfile:
+    #   class: logging.handlers.RotatingFileHandler
+    #   filename: /srv/backups/debug.log
+    #   formatter: basic
+    #   encoding: utf-8
+    #   maxBytes: 5242880 # 5 MiB
+    #   backupCount: 2
+    #   level: NOISE
+  # loggers:
+  #   skyped.api:
+  #     handlers: [console]
+  #     level: 0
+  root:
+    level: custom
+    handlers: [console]
