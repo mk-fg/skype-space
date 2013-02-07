@@ -7,4 +7,4 @@ SyslogIdentifier=%p
 KillSignal=SIGINT
 Restart=always
 RestartSec=5s
-ExecStart=/usr/bin/env %h/skyped/skyped -ns -c %h/skyped/skyped.conf
+ExecStart=/usr/bin/env %h/skyped/skyped -s
