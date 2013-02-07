@@ -54,7 +54,7 @@ in `skyped.conf`.
 == OPTIONS
 
 -c, --config::
-	Path to configuration file (default: $HOME/.skyped/skyped.conf)
+	Path to (additional) configuration file(s) (default: skyped.yaml)
 
 -d, --debug::
 	Enable debug messages
@@ -63,16 +63,10 @@ in `skyped.conf`.
 	Show short summary of options
 
 -H, --host::
-	Set the tcp host (default: 0.0.0.0)
-
--l, --log::
-	Set the log file in background mode (default: none)
+	Set the tcp host (default: localhost)
 
 -m, --mock=<file>::
 	Mock mode: replay session from file, instead of connecting to Skype.
-
--n, --nofork::
-	Don't run as daemon in the background
 
 -s, --dont-start-skype::
 	Assume that skype is running independently, don't try to start/stop it.

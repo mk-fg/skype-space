@@ -143,7 +143,7 @@ class SkypeProxy(object):
 		return gobject.MainLoop()
 
 
-	## Bind / unbind
+	## Bind / release listening socket
 
 	def bind(self):
 		'Initialize listening socket and I/O loop.'
@@ -206,9 +206,10 @@ class SkypeProxy(object):
 		self.skype_api.stop()
 
 
-	## Handlers / dispatchers
+	## Client handlers / dispatchers
 
 	def handle_connect(self, sock, event):
+		'Accepts new connection and sets up initial states/handlers for it.'
 		self.log.debug('Handling new connection')
 		assert sock is self.sock, sock
 		try: conn, addr = self.sock.accept()
@@ -234,6 +235,7 @@ class SkypeProxy(object):
 		return True
 
 	def conn_drop(self):
+		'Close client connection and flush all related state.'
 		if self.conn:
 			self.log.info('Closing connection to client: {}'.format(self.conn_addr))
 			self.conn.close()
@@ -244,7 +246,11 @@ class SkypeProxy(object):
 		return False
 
 
+	## I/O handlers
+
 	def handle_rx(self, conn, event):
+		'''Handle new bytes on client connection.
+			Should be called by eventloop when data is available.'''
 		# Check if client was disconnected
 		if conn is not self.conn: return self.unbind_ev('rx')
 
@@ -279,6 +285,8 @@ class SkypeProxy(object):
 		return True
 
 	def handle_tx(self, conn, event):
+		'''Handle sending of buffered data to client.
+			Should be called by eventloop when more data can be sent.'''
 		# Check if client was disconnected
 		if conn is not self.conn: return self.unbind_ev('tx')
 		if not self.conn_tx: return self.unbind_ev('tx') # nothing to send anyway
@@ -306,6 +314,7 @@ class SkypeProxy(object):
 
 
 	def handle_client_auth(self, lines):
+		'Only used in "auth" state to check received auth data against config.'
 		# This auth has timing side-channel due to "==" string comparisons and py
 		# TODO: drop this authentication if favor of TLS auth
 		if not self.conn_auth_user:
@@ -330,8 +339,8 @@ class SkypeProxy(object):
 			self.dispatch('PASSWORD OK\n')
 			if lines[1:]: self.log.warn('Garbage data after auth: {}'.format(lines[1:]))
 
-
 	def dispatch(self, *buff):
+		'Buffer raw data lines to be sent to client.'
 		self.trace('+>> {!r}', buff)
 		if not self.conn or not self.conn_state:
 			self.log.warn('Dropping message(s) - no client relay: {!r}'.format(buff))
