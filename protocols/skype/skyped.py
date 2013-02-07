@@ -69,10 +69,10 @@ class SkypeProxy(object):
 		ai_af, ai_addr = set(), list()
 		for family, _, _, hostname, addr in addrinfo:
 			ai_af.add(family)
-			ai_addr.append(addr[0])
+			ai_addr.append((addr[0], family))
 
 		if len(ai_af) > 1:
-			af_names = dict((v, k) for k,v in vars(socket) if k.startswith('AF_'))
+			af_names = dict((v, k) for k,v in vars(socket).viewitems() if k.startswith('AF_'))
 			ai_af_names = list(af_names.get(af, str(af)) for af in ai_af)
 			if socket.AF_INET not in ai_af:
 				self.log.fatal(
@@ -86,7 +86,9 @@ class SkypeProxy(object):
 			af = socket.AF_INET
 		else: af = list(ai_af)[0]
 
-		addr = ai_addr[0]
+		for addr, family in ai_addr:
+			if family == af: break
+		else: raise SetupError
 		if len(ai_addr) > 1:
 			self.log.warn( 'Specified host matches more than'
 				' one address ({}), using first one: {}'.format(ai_addr, addr) )
