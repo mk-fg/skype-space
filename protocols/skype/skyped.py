@@ -37,17 +37,23 @@ __version__ = 'gobject-1'
 
 class SkypeProxy(object):
 
-	io_loop = None
-
 	interval_ping_client = 60
 	interval_ping_skype = 2
 
-	# Client (only single one allowed) connection / address
-	conn = conn_addr = conn_buff = None
-	# State is one of: None, 'auth', 'ok', 'close'
-	# 'auth' state is monolithic to prevent username guessing
+	io_loop = sock = None
+	events = dict(timers=deque())
+
+	# Client (only single one allowed) connection, address, buffers.
+	conn = conn_addr = None
+	conn_rx = conn_tx = None
+
+	# Possible states:
+	#  - None - no client.
+	#  - auth - authentication required. All rx traffic passed to handle_client_auth().
+	#  - ok - authenticated user. All rx traffic passed to skype.
+	#  - close - send whatever's left in tx buffer and close connection. rx ignored.
 	conn_state = None
-	conn_auth_user = None
+	conn_auth_user = None # 'auth' state is monolithic to prevent username guessing
 
 	class SetupError(Exception): pass
 
@@ -58,8 +64,12 @@ class SkypeProxy(object):
 		self.log = logging.getLogger('skyped.loop')
 
 
+	def trace(self, msg, *args, **kw):
+		self.log.debug('conn[{}] {}'.format(self.conn_state, msg.format(*args, **kw)))
+
 	def get_socket_info(self):
-		'Return best-match (address-family, address, port) for configuration.'
+		'''Return best-match tuple of (address-family, address, port) for configuration.
+			Raises SetupError if no reasonably unambiguous settings can be resolved.'''
 		addrinfo = socket.getaddrinfo(
 			self.conf.listen.host, self.conf.listen.port, 0, 0, socket.SOL_TCP)
 
@@ -98,6 +108,42 @@ class SkypeProxy(object):
 		return af, addr, self.conf.listen.port
 
 
+	## Event controls
+
+	ev_in = gobject.IO_IN
+	ev_out = gobject.IO_OUT
+	ev_err = gobject.IO_ERR | gobject.IO_HUP
+
+	def unbind_ev(self, ev, handle=None):
+		if ev in self.events: handle = self.events.pop(ev)
+		if isinstance(handle, (int, long)): # gobject event id
+			gobject.source_remove(handle)
+		return False
+
+	def bind_rx(self, hander, sock=None):
+		self.unbind_ev('rx')
+		if sock is None: sock = self.conn
+		self.events['rx'] = gobject.io_add_watch(sock, self.ev_in | self.ev_err, hander)
+		return self.events['rx']
+
+	def bind_tx(self, handler, sock=None):
+		self.unbind_ev('tx')
+		if sock is None: sock = self.conn
+		self.events['tx'] = gobject.io_add_watch(sock, self.ev_out | self.ev_err, handler)
+		return self.events['tx']
+
+	def bind_timer(self, ev, interval, handler, *args, **kwargs):
+		self.unbind_ev(ev)
+		self.events[ev] = gobject.timeout_add_seconds(interval, handler, *args, **kwargs)
+
+	def bind_loop(self):
+		self.bind_rx(self.handle_connect, self.sock)
+		self.bind_timer('ping_skype', self.interval_ping_skype, self.dispatch_skype_ping)
+		return gobject.MainLoop()
+
+
+	## Bind / unbind
+
 	def bind(self):
 		'Initialize listening socket and I/O loop.'
 		assert not self.io_loop
@@ -125,23 +171,41 @@ class SkypeProxy(object):
 				ssl_version=ssl.PROTOCOL_TLSv1 )
 		except ssl.SSLError as err:
 			self.log.warn('TLS socket wrapping failed (did you create your certificate?)')
+		self.sock.setblocking(0)
 
-		gobject.io_add_watch(self.sock, gobject.IO_IN, self.handle_connect)
-		gobject.timeout_add_seconds(self.interval_ping_skype, self.dispatch_skype_ping)
+		self.io_loop = self.bind_loop()
+		self.log.debug('Bound socket, initialized main I/O loop')
 
-		self.io_loop = gobject.MainLoop()
+	def unbind(self):
+		self.io_loop = None
+		self.conn_drop()
+		if self.sock:
+			self.sock.close()
+			self.sock = None
+		self.log.debug('Released socket, unplugged events')
 
+
+	## Main loop controls
+
+	def run_loop(self):
+		self.io_loop.run()
 
 	def run(self):
 		'Run infinite I/O loop. Does not return until stop() is called.'
-		self.io_loop.run()
+		if not self.sock: self.bind()
+		self.run_loop()
+
+	def stop_loop(self):
+		self.io_loop.quit()
 
 	def stop(self):
 		'Stop loop, close api.'
-		self.conn_drop()
-		self.io_loop.quit()
+		self.stop_loop()
+		self.unbind()
 		self.skype_api.stop()
 
+
+	## Handlers / dispatchers
 
 	def handle_connect(self, sock, event):
 		self.log.debug('Handling new connection')
@@ -159,13 +223,12 @@ class SkypeProxy(object):
 			conn.close()
 			return True
 
-		events_recv = gobject.IO_IN | gobject.IO_ERR | gobject.IO_HUP
-		gobject.io_add_watch(conn, events_recv, self.handle_recv)
-		gobject.timeout_add_seconds(self.interval_ping_client, self.dispatch_client_ping, conn)
+		self.bind_rx(self.handle_rx, conn)
+		self.bind_timer('ping_client', self.interval_ping_client, self.dispatch_client_ping, conn)
 
 		self.conn_state = 'auth' # send/recv auth data, when available
 		self.conn, self.conn_addr = conn, addr
-		self.conn_buff = deque()
+		self.conn_rx, self.conn_tx = '', ''
 
 		return True
 
@@ -175,62 +238,69 @@ class SkypeProxy(object):
 			self.conn.close()
 		for ev, handle in self.events.items(): self.unbind_ev(ev, handle)
 		self.conn = self.conn_addr = None
-		self.conn_state = self.conn_auth_user = self.conn_buff = None
+		self.conn_state = self.conn_auth_user = None
+		self.conn_rx = self.conn_tx = None
 		return False
 
 
-	def handle_recv(self, conn, event):
-		# TODO: use O_NOBLOCK here, not to hang gobject loop on recv/send
+	def handle_rx(self, conn, event):
 		# Check if client was disconnected
-		if conn is not self.conn: return False
+		if conn is not self.conn: return self.unbind_ev('rx')
 
-		if event & gobject.IO_IN:
-			try: buff = conn.recv(1024) # TODO: hangs the loop
-			except (socket.error, AssertionError) as err:
-				self.log.error( 'Error while receiving data from'
-					' {}, closing connection: {}'.format(self.conn_addr, err) )
-				return self.conn_drop()
+		if event & self.ev_in:
+			try: self.conn_rx += conn.recv(1024)
+			except socket.error as err:
+				if err.errno != errno.EAGAIN:
+					self.log.error( 'Error while receiving data from'
+						' {}, closing connection: {}'.format(self.conn_addr, err) )
+					return self.conn_drop()
 
-			assert self.conn_state in ['auth', 'ok', 'close']
-			if self.conn_state == 'auth':
-				return self.handle_client_auth(buff)
-			elif self.conn_state == 'ok':
-				for line in buff.splitlines():
-					line = line.strip()
-					if line: self.skype_api.send(line) # TODO: blocking?
-			elif self.conn_state == 'close':
-				return False
+			self.trace('<< {!r}', self.conn_rx)
+			if '\n' in self.conn_rx: # handle complete lines
+				lines = self.conn_rx.split('\n')
+				self.conn_rx = lines.pop()
 
-		if event & (gobject.IO_ERR | gobject.IO_HUP):
+				assert self.conn_state in ['auth', 'ok', 'close']
+				if self.conn_state == 'auth':
+					self.handle_client_auth(lines)
+				elif self.conn_state == 'ok':
+					for line in lines:
+						line = line.strip()
+						if line: self.skype_api.send(line) # TODO: blocking?
+				elif self.conn_state == 'close':
+					return self.unbind_ev('rx')
+
+		if event & self.ev_err:
 			self.log.error( 'Error state on connection'
 				' from {}, closing it: {}'.format(self.conn_addr, err) )
 			return self.conn_drop()
 
 		return True
 
-	def handle_send(self, conn, event):
-		# TODO: use O_NOBLOCK here, not to hang gobject loop on recv/send
+	def handle_tx(self, conn, event):
 		# Check if client was disconnected
-		if conn is not self.conn: return False
-		if not self.conn_buff: return False
+		if conn is not self.conn: return self.unbind_ev('tx')
+		if not self.conn_tx: return self.unbind_ev('tx') # nothing to send anyway
 
-		buff = self.conn_buff.popleft()
-
-		if event & gobject.IO_OUT:
-			try: conn.sendall(buff) # TODO: hangs the loop
+		if event & self.ev_out:
+			try: bs = conn.send(self.conn_tx)
 			except socket.error as err:
-				self.log.error( 'Error while sending data to'
-					' {}, closing connection: {}'.format(self.conn_addr, err) )
-				return self.conn_drop()
+				if err.errno != errno.EAGAIN:
+					self.log.error( 'Error while sending data to'
+						' {}, closing connection: {}'.format(self.conn_addr, err) )
+					return self.conn_drop()
+			else:
+				self.trace('>> {!r}', self.conn_tx[:bs])
+				self.conn_tx = self.conn_tx[bs:]
 
-		if event & (gobject.IO_ERR | gobject.IO_HUP):
+		if event & self.ev_err:
 			self.log.error( 'Error state on connection'
 				' from {}, closing it: {}'.format(self.conn_addr, err) )
 			return self.conn_drop()
 
-		if not self.conn_buff:
+		if not self.conn_tx: # sent everything
 			if self.conn_state == 'close': return self.conn_drop()
-			return False
+			return self.unbind_ev('tx')
 		return True
 
 
@@ -253,20 +323,20 @@ class SkypeProxy(object):
 				self.log.error('Client authentication FAILED.')
 				self.conn_state = 'close'
 				self.dispatch('PASSWORD KO\n')
-				return True
+				return
 			self.log.info('Client authentication successful.')
 			self.conn_state = 'ok'
 			self.dispatch('PASSWORD OK\n')
-			return True
+			if lines[1:]: self.log.warn('Garbage data after auth: {}'.format(lines[1:]))
 
 
 	def dispatch(self, *buff):
+		self.trace('+>> {!r}', buff)
 		if not self.conn or not self.conn_state:
-			self.log.warn('Dropping message(s) - no client relay: {}'.format(buff))
+			self.log.warn('Dropping message(s) - no client relay: {!r}'.format(buff))
 			return False
-		if not self.conn_buff:
-			gobject.io_add_watch(self.conn, gobject.IO_OUT, self.handle_send)
-		self.conn_buff.extend(buff)
+		self.conn_tx += ''.join(buff)
+		if not self.events.get('tx'): self.bind_tx(self.handle_tx)
 		return self.conn_state != 'close'
 
 	def dispatch_client_ping(self, conn):
