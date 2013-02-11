@@ -40,5 +40,5 @@ logging: # see http://docs.python.org/library/logging.config.html
   #   Skype4Py:
   #     level: INFO
   root:
-    level: custom
+    level: 0
     handlers: [console]
