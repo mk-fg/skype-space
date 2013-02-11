@@ -25,20 +25,23 @@ from ConfigParser import ConfigParser, NoOptionError
 from traceback import print_exception
 from fcntl import fcntl, F_SETFD, FD_CLOEXEC
 from collections import deque
+from threading import RLock
 from os.path import join, exists, expanduser
-import os, sys, logging, socket, ssl, hashlib
+import os, sys, logging, socket, ssl, hashlib, errno
 
 import gobject
 import Skype4Py
 import lya
 
-__version__ = 'gobject-1'
+__version__ = 'gobject-2'
 
 
 class SkypeProxy(object):
 
 	interval_ping_client = 60
 	interval_ping_skype = 2
+	# Thresholds can be unset to take no action
+	ping_thresholds = dict(skype=20, client=120)
 
 	io_loop = sock = None
 	events = dict(timers=deque())
@@ -54,13 +57,18 @@ class SkypeProxy(object):
 	#  - close - send whatever's left in tx buffer and close connection. rx ignored.
 	conn_state = None
 	conn_auth_user = None # 'auth' state is monolithic to prevent username guessing
+	conn_pings = None # used to generate warnings if there are no PONGs
+
+	dispatch_lock = RLock()
 
 	class SetupError(Exception): pass
+	class OperationalError(Exception): pass
 
 
 	def __init__(self, conf, **api_opts):
 		self.conf = conf
-		self.skype_api = SkypeAPI(self.dispatch, **api_opts)
+		self.events = self.events.copy()
+		self.skype_api = SkypeAPI(self.dispatch_threadsafe, **api_opts)
 		self.log = logging.getLogger('skyped.loop')
 
 
@@ -139,7 +147,6 @@ class SkypeProxy(object):
 
 	def bind_loop(self):
 		self.bind_rx(self.handle_connect, self.sock)
-		self.bind_timer('ping_skype', self.interval_ping_skype, self.dispatch_skype_ping)
 		return gobject.MainLoop()
 
 
@@ -148,7 +155,6 @@ class SkypeProxy(object):
 	def bind(self):
 		'Initialize listening socket and I/O loop.'
 		assert not self.io_loop
-		# TODO: abstract gobject.* methods in this class
 		#  and make bind() dispatch to gobject/select paths
 
 		# Create raw listening socket
@@ -201,7 +207,7 @@ class SkypeProxy(object):
 
 	def stop(self):
 		'Stop loop, close api.'
-		self.stop_loop()
+		if self.io_loop: self.stop_loop()
 		self.unbind()
 		self.skype_api.stop()
 
@@ -212,6 +218,7 @@ class SkypeProxy(object):
 		'Accepts new connection and sets up initial states/handlers for it.'
 		self.log.debug('Handling new connection')
 		assert sock is self.sock, sock
+		conn = None
 		try: conn, addr = self.sock.accept()
 		except (ssl.SSLError, socket.error) as err:
 			self.log.warn('Error during TLS handshake, dropping connection: {}'.format(err))
@@ -222,15 +229,15 @@ class SkypeProxy(object):
 				err = True
 			else: err = False
 		if err:
-			conn.close()
+			if conn: conn.close()
 			return True
 
 		self.bind_rx(self.handle_rx, conn)
-		self.bind_timer('ping_client', self.interval_ping_client, self.dispatch_client_ping, conn)
 
 		self.conn_state = 'auth' # send/recv auth data, when available
 		self.conn, self.conn_addr = conn, addr
 		self.conn_rx, self.conn_tx = '', ''
+		self.conn_pings = dict()
 
 		return True
 
@@ -241,7 +248,7 @@ class SkypeProxy(object):
 			self.conn.close()
 		for ev, handle in self.events.items(): self.unbind_ev(ev, handle)
 		self.conn = self.conn_addr = None
-		self.conn_state = self.conn_auth_user = None
+		self.conn_state = self.conn_auth_user = self.conn_pings = None
 		self.conn_rx = self.conn_tx = None
 		return False
 
@@ -251,21 +258,27 @@ class SkypeProxy(object):
 	def handle_rx(self, conn, event):
 		'''Handle new bytes on client connection.
 			Should be called by eventloop when data is available.'''
-		# Check if client was disconnected
 		if conn is not self.conn: return self.unbind_ev('rx')
 
 		if event & self.ev_in:
-			try: self.conn_rx += conn.recv(1024)
+			try:
+				buff = conn.recv(1024)
+				assert buff, 'No data received'
+			except AssertionError: return self.conn_drop() # was closed
 			except socket.error as err:
-				if err.errno != errno.EAGAIN:
+				if getattr(err, 'errno', None) != errno.EAGAIN:
 					self.log.error( 'Error while receiving data from'
 						' {}, closing connection: {}'.format(self.conn_addr, err) )
 					return self.conn_drop()
+			else: self.conn_rx += buff
 
 			self.trace('<< {!r}', self.conn_rx)
 			if '\n' in self.conn_rx: # handle complete lines
 				lines = self.conn_rx.split('\n')
 				self.conn_rx = lines.pop()
+
+				lines = self.handle_pongs('client', lines)
+				if not lines: return True
 
 				assert self.conn_state in ['auth', 'ok', 'close']
 				if self.conn_state == 'auth':
@@ -273,13 +286,13 @@ class SkypeProxy(object):
 				elif self.conn_state == 'ok':
 					for line in lines:
 						line = line.strip()
-						if line: self.skype_api.send(line) # TODO: blocking?
+						if line: self.skype_api.send(line)
 				elif self.conn_state == 'close':
 					return self.unbind_ev('rx')
 
 		if event & self.ev_err:
 			self.log.error( 'Error state on connection'
-				' from {}, closing it: {}'.format(self.conn_addr, err) )
+				' from {}, closing it'.format(self.conn_addr) )
 			return self.conn_drop()
 
 		return True
@@ -287,7 +300,6 @@ class SkypeProxy(object):
 	def handle_tx(self, conn, event):
 		'''Handle sending of buffered data to client.
 			Should be called by eventloop when more data can be sent.'''
-		# Check if client was disconnected
 		if conn is not self.conn: return self.unbind_ev('tx')
 		if not self.conn_tx: return self.unbind_ev('tx') # nothing to send anyway
 
@@ -304,7 +316,7 @@ class SkypeProxy(object):
 
 		if event & self.ev_err:
 			self.log.error( 'Error state on connection'
-				' from {}, closing it: {}'.format(self.conn_addr, err) )
+				' from {}, closing it'.format(self.conn_addr) )
 			return self.conn_drop()
 
 		if not self.conn_tx: # sent everything
@@ -338,9 +350,18 @@ class SkypeProxy(object):
 			self.conn_state = 'ok'
 			self.dispatch('PASSWORD OK\n')
 			if lines[1:]: self.log.warn('Garbage data after auth: {}'.format(lines[1:]))
+			# Establish some basic keepalive pings
+			self.bind_timer('ping_client', self.interval_ping_client, self.dispatch_client_ping)
+			self.bind_timer('ping_skype', self.interval_ping_skype, self.dispatch_skype_ping)
+
+	def dispatch_threadsafe(self, *buff):
+		with self.dispatch_lock:
+			return self.dispatch(*buff)
 
 	def dispatch(self, *buff):
 		'Buffer raw data lines to be sent to client.'
+		buff = self.handle_pongs('skype', buff)
+		if not buff: return True
 		self.trace('+>> {!r}', buff)
 		if not self.conn or not self.conn_state:
 			self.log.warn('Dropping message(s) - no client relay: {!r}'.format(buff))
@@ -349,14 +370,50 @@ class SkypeProxy(object):
 		if not self.events.get('tx'): self.bind_tx(self.handle_tx)
 		return self.conn_state != 'close'
 
-	def dispatch_client_ping(self, conn):
-		# Check if client was disconnected since last ping
-		if conn is not self.conn: return False
+	def dispatch_client_ping(self):
+		'Disconnect client after too many ping fails in a row.'
+		if not self.conn: return False
+		self.ping_check( 'client',
+			lambda msg: [log.error(msg + ', disconnecting client'), self.conn_drop()] )
 		return self.dispatch('PING\n')
 
 	def dispatch_skype_ping(self):
-		self.skype_api.ping()
+		'Crash daemon after failing to ping skype for too long.'
+		self.skype_api.send('PING')
+		self.ping_check('skype', self.fail)
 		return True
+
+
+	## Helpers
+
+	def ping_check(self, name, fail_callback):
+		'Check if response to specified ping was received.'
+		if self.conn_pings is None: return
+		err = self.conn_pings.get(name) is False
+		if err:
+			self.log.warn('Failed to get response to ping ({})'.format(name))
+			timeout, ev = self.ping_thresholds.get(name), 'ping_fail_{}'.format(name)
+			if timeout and not self.events.get(ev):
+				self.bind_timer( ev, timeout, fail_callback,
+					'Failed to receive ping ({}) response for {}s'.format(name, timeout) )
+		else: self.conn_pings[name] = False
+		return err
+
+	def handle_pongs(self, name, lines):
+		'Filter out "PONG" responses, acking their presence.'
+		if self.conn_pings is None: return lines
+		lines_out = list()
+		for line in lines:
+			if line.strip() == 'PONG':
+				self.conn_pings[name] = True
+				self.unbind_ev('ping_fail_{}'.format(name))
+				continue
+			lines_out.append(line)
+		return lines_out
+
+	def fail(self, message='unspecified error'):
+		self.log.fatal(message)
+		raise self.OperationalError(message)
 
 
 class MockedSkype(object):
@@ -369,7 +426,7 @@ class MockedSkype(object):
 	def SendCommand(self, c):
 		pass
 
-	def Command(self, msg, Block):
+	def Command(self, msg):
 		if msg == 'PING':
 			return ['PONG']
 		line = self.lines[0].strip()
@@ -398,7 +455,8 @@ class SkypeAPI(object):
 	def __init__(self, relay, mock=False, dont_start_skype=False):
 		if not mock:
 			self.skype = Skype4Py.Skype()
-			self.skype.OnNotify = self.recv
+			self.skype.RegisterEventHandler('Notify', self.recv)
+			self.skype.RegisterEventHandler('Reply', self.recv)
 			if not dont_start_skype: self.skype.Client.Start()
 		else: self.skype = MockedSkype(mock)
 		self.mock, self.dont_start_skype = mock, dont_start_skype
@@ -409,40 +467,36 @@ class SkypeAPI(object):
 		if isinstance(msg, bytes): return msg
 		return msg.encode('utf-8', 'backslashreplace')
 
-	def recv(self, msg_text):
-		if msg_text == 'PONG': return
-		if '\n' in msg_text:
+	def recv(self, msg):
+		if isinstance(msg, Skype4Py.api.Command):
+			msg = msg.Reply
+		if '\n' in msg:
 			# crappy skype prefixes only the first line for
 			# multiline messages so we need to do so for the other
 			# lines, too. this is something like:
 			# 'CHATMESSAGE id BODY first line\nsecond line' ->
 			# 'CHATMESSAGE id BODY first line\nCHATMESSAGE id BODY second line'
-			prefix = ' '.join(msg_text.split(' ', 3)[:3])
-			msg_text = ['{} {}'.format(prefix, v) for v in ' '.join(msg_text.split(' ')[3:]).split('\n')]
-		else:
-			msg_text = [msg_text]
-		for line in msg_text:
+			prefix = ' '.join(msg.split(' ', 3)[:3])
+			msg = ['{} {}'.format(prefix, v) for v in ' '.join(msg.split(' ')[3:]).split('\n')]
+		else: msg = [msg]
+		for line in msg:
 			line = self.encode(line)
-			self.log.debug('<< ' + line)
+			if not line: continue
+			if line != 'PONG': self.log.debug('<< ' + line) # too much idle noise
 			self.relay(line + '\n')
 
 	def send(self, msg_text):
-		if not msg_text or msg_text == 'PONG': return
+		if not msg_text: return
 		line = self.encode(msg_text)
-		self.log.debug('>> ' + line)
+		if not line: return
+		if line != 'PING': self.log.debug('>> ' + line) # too much idle noise
 		try:
-			cmd = self.skype.Command(line, Block=True)
+			cmd = self.skype.Command(line)
 			self.skype.SendCommand(cmd)
-			if hasattr(cmd, 'Reply'): self.recv(cmd.Reply) # Skype4Py answer
-			else:
-				for line in cmd: self.recv(line) # mock can return multiple iterable answers
+			if self.mock: # mock provides immediate replies
+				for line in cmd: self.recv(line)
 		except (Skype4Py.SkypeAPIError, Skype4Py.SkypeError) as err:
 			self.log.warn('Command failed: {}'.format(line))
-
-	def ping(self):
-		try: self.skype.SendCommand(self.skype.Command('PING', Block=True))
-		except (Skype4Py.SkypeAPIError, AttributeError) as err:
-			self.log.warn('Failed sending ping: {}'.format(err))
 
 	def stop(self):
 		if not self.mock and not self.dont_start_skype:
@@ -496,7 +550,9 @@ def main(args=None):
 
 	def excepthook(exc_type, exc_value, exc_tb):
 		if exc_type != KeyboardInterrupt:
-			print_exception(exc_type, exc_value, exc_tb)
+			try: log.fatal('skyped crashed ({}): {}'.format(exc_type, exc_value))
+			except: pass
+			print_exception(exc_type, exc_value, exc_tb, limit=30)
 			code = 1
 		else: code = 0
 		server.stop()

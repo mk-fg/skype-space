@@ -14,11 +14,12 @@ listen:
 logging: # see http://docs.python.org/library/logging.config.html
   # "custom" level means WARNING/DEBUG, depending on CLI options
   warnings: true # capture python warnings
-  net_debug: false # log all recv/send buffers - very noisy
+  net_debug: false # log all recv/send buffers - noisy
 
   version: 1
   formatters:
     basic:
+      # As Skype4Py uses threads, adding "%(thread)d" might help
       format: '%(asctime)s :: %(name)s :: %(levelname)s: %(message)s'
       datefmt: '%Y-%m-%d %H:%M:%S'
   handlers:
@@ -36,9 +37,8 @@ logging: # see http://docs.python.org/library/logging.config.html
     #   backupCount: 2
     #   level: DEBUG
   # loggers:
-  #   skyped.api:
-  #     handlers: [console]
-  #     level: 0
+  #   Skype4Py:
+  #     level: INFO
   root:
     level: custom
     handlers: [console]
