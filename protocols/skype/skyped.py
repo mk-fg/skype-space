@@ -354,10 +354,6 @@ class SkypeProxy(object):
 			self.bind_timer('ping_client', self.interval_ping_client, self.dispatch_client_ping)
 			self.bind_timer('ping_skype', self.interval_ping_skype, self.dispatch_skype_ping)
 
-	def dispatch_threadsafe(self, *buff):
-		with self.dispatch_lock:
-			return self.dispatch(*buff)
-
 	def dispatch(self, *buff):
 		'Buffer raw data lines to be sent to client.'
 		buff = self.handle_pongs('skype', buff)
@@ -370,18 +366,24 @@ class SkypeProxy(object):
 		if not self.events.get('tx'): self.bind_tx(self.handle_tx)
 		return self.conn_state != 'close'
 
+	def dispatch_threadsafe(self, *buff):
+		with self.dispatch_lock:
+			return self.dispatch(*buff)
+
 	def dispatch_client_ping(self):
 		'Disconnect client after too many ping fails in a row.'
 		if not self.conn: return False
-		self.ping_check( 'client',
-			lambda msg: [log.error(msg + ', disconnecting client'), self.conn_drop()] )
-		return self.dispatch('PING\n')
+		with self.dispatch_lock:
+			self.ping_check( 'client',
+				lambda msg: [log.error(msg + ', disconnecting client'), self.conn_drop()] )
+			return self.dispatch('PING\n')
 
 	def dispatch_skype_ping(self):
 		'Crash daemon after failing to ping skype for too long.'
-		self.skype_api.send('PING')
-		self.ping_check('skype', self.fail)
-		return True
+		with self.dispatch_lock:
+			self.ping_check('skype', self.fail)
+			self.skype_api.send('PING')
+			return True
 
 
 	## Helpers
