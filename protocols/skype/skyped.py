@@ -375,7 +375,7 @@ class SkypeProxy(object):
 		if not self.conn: return False
 		with self.dispatch_lock:
 			self.ping_check( 'client',
-				lambda msg: [log.error(msg + ', disconnecting client'), self.conn_drop()] )
+				lambda msg: [self.log.error(msg + ', disconnecting client'), self.conn_drop()] )
 			return self.dispatch('PING\n')
 
 	def dispatch_skype_ping(self):
