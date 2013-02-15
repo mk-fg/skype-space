@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 #
 #   skyped.py
 #
@@ -19,6 +21,7 @@
 #   Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307,
 #   USA.
 #
+
 from __future__ import print_function
 
 from ConfigParser import ConfigParser, NoOptionError
@@ -27,13 +30,23 @@ from fcntl import fcntl, F_SETFD, FD_CLOEXEC
 from collections import deque
 from threading import RLock
 from os.path import join, exists, expanduser
-import os, sys, logging, socket, ssl, hashlib, errno
+import os, sys, socket, errno
+import logging, ssl, hashlib
 
 import gobject
 import Skype4Py
 import lya
 
-__version__ = 'gobject-2'
+__version__ = 'gobject-3'
+
+
+def force_bytes(bytes_or_unicode, encoding='utf-8', errors='backslashreplace'):
+	if isinstance(bytes_or_unicode, bytes): return bytes_or_unicode
+	return bytes_or_unicode.encode(encoding, errors)
+
+def force_unicode(bytes_or_unicode, encoding='utf-8', errors='backslashreplace'):
+	if isinstance(bytes_or_unicode, unicode): return bytes_or_unicode
+	return bytes_or_unicode.decode(encoding, errors)
 
 
 class SkypeProxy(object):
@@ -74,7 +87,9 @@ class SkypeProxy(object):
 
 	def trace(self, msg, *args, **kw):
 		if not self.conf.logging.net_debug: return
-		self.log.debug('conn[{}] {}'.format(self.conn_state, msg.format(*args, **kw)))
+		# There can be any kind of binary data in there, so not to confuse the logger...
+		msg = force_unicode(msg.format(*args, **kw))
+		self.log.debug(u'conn[{}] {}'.format(self.conn_state, msg))
 
 	def get_socket_info(self):
 		'''Return best-match tuple of (address-family, address, port) for configuration.
@@ -465,10 +480,6 @@ class SkypeAPI(object):
 		self.relay = relay
 		self.log = logging.getLogger('skyped.api')
 
-	def encode(self, msg):
-		if isinstance(msg, bytes): return msg
-		return msg.encode('utf-8', 'backslashreplace')
-
 	def recv(self, msg):
 		if isinstance(msg, Skype4Py.api.Command):
 			msg = msg.Reply
@@ -482,23 +493,23 @@ class SkypeAPI(object):
 			msg = ['{} {}'.format(prefix, v) for v in ' '.join(msg.split(' ')[3:]).split('\n')]
 		else: msg = [msg]
 		for line in msg:
-			line = self.encode(line)
+			line = force_bytes(line)
 			if not line: continue
-			if line != 'PONG': self.log.debug('<< ' + line) # too much idle noise
+			if line != 'PONG': self.log.debug('<< ' + force_unicode(line)) # too much idle noise
 			self.relay(line + '\n')
 
 	def send(self, msg_text):
 		if not msg_text: return
-		line = self.encode(msg_text)
+		line = force_bytes(msg_text)
 		if not line: return
-		if line != 'PING': self.log.debug('>> ' + line) # too much idle noise
+		if line != 'PING': self.log.debug('>> ' + force_unicode(line)) # too much idle noise
 		try:
 			cmd = self.skype.Command(line)
 			self.skype.SendCommand(cmd)
 			if self.mock: # mock provides immediate replies
 				for line in cmd: self.recv(line)
 		except (Skype4Py.SkypeAPIError, Skype4Py.SkypeError) as err:
-			self.log.warn('Command failed: {}'.format(line))
+			self.log.warn(u'Command failed: {}'.format(force_unicode(line)))
 
 	def stop(self):
 		if not self.mock and not self.dont_start_skype:
