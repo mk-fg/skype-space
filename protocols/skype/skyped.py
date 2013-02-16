@@ -483,6 +483,7 @@ class SkypeAPI(object):
 	def recv(self, msg):
 		if isinstance(msg, Skype4Py.api.Command):
 			msg = msg.Reply
+		msg = force_bytes(msg)
 		if '\n' in msg:
 			# crappy skype prefixes only the first line for
 			# multiline messages so we need to do so for the other
@@ -493,7 +494,6 @@ class SkypeAPI(object):
 			msg = ['{} {}'.format(prefix, v) for v in ' '.join(msg.split(' ')[3:]).split('\n')]
 		else: msg = [msg]
 		for line in msg:
-			line = force_bytes(line)
 			if not line: continue
 			if line != 'PONG': self.log.debug('<< ' + force_unicode(line)) # too much idle noise
 			self.relay(line + '\n')
