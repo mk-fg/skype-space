@@ -437,15 +437,14 @@ class MockedSkype(object):
 	'''Mock class for Skype4Py.Skype(), in case the -m option is used.'''
 
 	def __init__(self, mock):
-		sock = open(mock)
-		self.lines = sock.readlines()
+		self.lines = open(mock).readlines()
 
 	def SendCommand(self, c):
 		pass
 
 	def Command(self, msg):
-		if msg == 'PING':
-			return ['PONG']
+		if not self.lines: return None # finished
+		if msg == 'PING': return ['PONG']
 		line = self.lines[0].strip()
 		if not line.startswith('>> '):
 			raise Exception('Corrupted mock input')
@@ -538,6 +537,7 @@ class SkypeAPI(object):
 		if line != 'PING': self.log.debug('>> ' + force_unicode(line)) # too much idle noise
 		try:
 			cmd = self.skype.Command(line)
+			if self.mock and cmd is None: return
 			self.skype.SendCommand(cmd)
 			if self.mock: # mock provides immediate replies
 				for line in cmd: self.recv(line)
