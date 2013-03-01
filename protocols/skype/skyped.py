@@ -520,10 +520,10 @@ class SkypeAPI(object):
 			msg, (prefix, line) = list(), match.groups()
 			for line in (line or '').split('\n'):
 				if len(line) < self.message_max_length:
-					msg.append('{} {}'.format(prefix, line_part))
+					msg.append(prefix + line)
 				else: # split long lines into several shorter ones
 					for line in self.message_split(line, self.message_max_length):
-						msg.append('{} {}'.format(prefix, line))
+						msg.append(prefix + line)
 		else: msg = [msg]
 		for line in msg:
 			if not line: continue
