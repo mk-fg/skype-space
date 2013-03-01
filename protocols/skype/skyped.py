@@ -31,7 +31,7 @@ from collections import deque
 from threading import RLock
 from os.path import join, exists, expanduser
 import os, sys, socket, errno
-import logging, ssl, hashlib
+import logging, ssl, hashlib, re
 
 import gobject
 import Skype4Py
@@ -469,6 +469,11 @@ class MockedSkype(object):
 
 class SkypeAPI(object):
 
+	# Relayed max length minus the "CHATMESSAGE <id> BODY " prefix
+	# Messages are split by unicode words, but length is measured *in bytes*
+	# IRC allows 400+ byte messages (512 - len('PRIVMSG chan-name :\r\n'))
+	message_max_length = 120
+
 	def __init__(self, relay, mock=False, dont_start_skype=False):
 		if not mock:
 			self.skype = Skype4Py.Skype()
@@ -480,18 +485,46 @@ class SkypeAPI(object):
 		self.relay = relay
 		self.log = logging.getLogger('skyped.api')
 
+	def message_split(self, line, max_length, cont_mark=u'.. '):
+		'''Split single-line message by-word to conform to message_max_length,
+			preserving indents and original inter-word spaces.'''
+		cont, line = u'', force_unicode(line)
+		match = re.search(r'^\s+', line) # find if there's some indent
+		line_indent = match.group(0) if match else u''
+		match, line = None, line[len(line_indent):]
+		while True:
+			if match is None: line_split = list() # first line or line was appended
+			match = re.search(ur'(?u)(\S+)(\s+)?', line) # split by-word, preserving spaces
+			if not match:
+				assert not line.strip(), line # make sure nothing is left there
+				if line_split: yield force_bytes(line_indent + cont + u''.join(line_split))
+				break
+			else: line = line[len(match.group(0)):]
+			line_split.append(match.group(1)) # append word
+			line_part = force_bytes(line_indent + cont + u''.join(line_split)) # encode with indent
+			if len(line_part) > max_length: # length of encoded msg in bytes
+				if len(line_split) < 2: # single word exceeds length as it is
+					yield line_part
+					cont, match = cont_mark, None
+				else:
+					if len(line_split) > 2: line_split.pop() # trailing spaces
+					yield force_bytes(line_indent + cont + u''.join(line_split[:-1]))
+					cont, line_split = cont_mark, [match.group(1), match.group(2) or u''] # last word+spaces
+			else: line_split.append(match.group(2) or u'') # append spaces as well
+
 	def recv(self, msg):
 		if isinstance(msg, Skype4Py.api.Command):
 			msg = msg.Reply
 		msg = force_bytes(msg)
-		if '\n' in msg:
-			# crappy skype prefixes only the first line for
-			# multiline messages so we need to do so for the other
-			# lines, too. this is something like:
-			# 'CHATMESSAGE id BODY first line\nsecond line' ->
-			# 'CHATMESSAGE id BODY first line\nCHATMESSAGE id BODY second line'
-			prefix = ' '.join(msg.split(' ', 3)[:3])
-			msg = ['{} {}'.format(prefix, v) for v in ' '.join(msg.split(' ')[3:]).split('\n')]
+		match = re.search(r'^(CHATMESSAGE\s+\d+\s+BODY\s)(.*)$', msg)
+		if match:
+			msg, (prefix, line) = list(), match.groups()
+			for line in (line or '').split('\n'):
+				if len(line) < self.message_max_length:
+					msg.append('{} {}'.format(prefix, line_part))
+				else: # split long lines into several shorter ones
+					for line in self.message_split(line, self.message_max_length):
+						msg.append('{} {}'.format(prefix, line))
 		else: msg = [msg]
 		for line in msg:
 			if not line: continue
