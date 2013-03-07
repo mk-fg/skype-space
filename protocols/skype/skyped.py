@@ -515,7 +515,7 @@ class SkypeAPI(object):
 		if isinstance(msg, Skype4Py.api.Command):
 			msg = msg.Reply
 		msg = force_bytes(msg)
-		match = re.search(r'^(CHATMESSAGE\s+\d+\s+BODY\s)(.*)$', msg)
+		match = re.search(r'^(?s)(CHATMESSAGE\s+\d+\s+BODY\s)(.*)$', msg)
 		if match:
 			msg, (prefix, line) = list(), match.groups()
 			for line in (line or '').split('\n'):
