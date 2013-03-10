@@ -144,11 +144,11 @@ class SkypeProxy(object):
 			gobject.source_remove(handle)
 		return False
 
-	def bind_rx(self, hander, sock=None):
-		self.unbind_ev('rx')
+	def bind_rx(self, hander, sock=None, ev='rx'):
+		self.unbind_ev(ev)
 		if sock is None: sock = self.conn
-		self.events['rx'] = gobject.io_add_watch(sock, self.ev_in | self.ev_err, hander)
-		return self.events['rx']
+		self.events[ev] = gobject.io_add_watch(sock, self.ev_in | self.ev_err, hander)
+		return self.events[ev]
 
 	def bind_tx(self, handler, sock=None):
 		self.unbind_ev('tx')
@@ -161,7 +161,7 @@ class SkypeProxy(object):
 		self.events[ev] = gobject.timeout_add_seconds(interval, handler, *args, **kwargs)
 
 	def bind_loop(self):
-		self.bind_rx(self.handle_connect, self.sock)
+		self.bind_rx(self.handle_connect, sock=self.sock, ev='accept')
 		return gobject.MainLoop()
 
 
@@ -261,7 +261,8 @@ class SkypeProxy(object):
 		if self.conn:
 			self.log.info('Closing connection to client: {}'.format(self.conn_addr))
 			self.conn.close()
-		for ev, handle in self.events.items(): self.unbind_ev(ev, handle)
+		for ev, handle in self.events.items():
+			if ev != 'accept': self.unbind_ev(ev, handle) # hopefully there're no other such events
 		self.conn = self.conn_addr = None
 		self.conn_state = self.conn_auth_user = self.conn_pings = None
 		self.conn_rx = self.conn_tx = None
