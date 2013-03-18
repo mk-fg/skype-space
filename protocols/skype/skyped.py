@@ -81,7 +81,7 @@ class SkypeProxy(object):
 	def __init__(self, conf, **api_opts):
 		self.conf = conf
 		self.events = self.events.copy()
-		self.skype_api = SkypeAPI(self.dispatch_threadsafe, **api_opts)
+		self.skype_api = SkypeAPI(self.dispatch, **api_opts)
 		self.log = logging.getLogger('skyped.loop')
 
 
@@ -316,29 +316,30 @@ class SkypeProxy(object):
 	def handle_tx(self, conn, event):
 		'''Handle sending of buffered data to client.
 			Should be called by eventloop when more data can be sent.'''
-		if conn is not self.conn: return self.unbind_ev('tx')
-		if not self.conn_tx: return self.unbind_ev('tx') # nothing to send anyway
+		with self.dispatch_lock:
+			if conn is not self.conn: return self.unbind_ev('tx')
+			if not self.conn_tx: return self.unbind_ev('tx') # nothing to send anyway
 
-		if event & self.ev_out:
-			try: bs = conn.send(self.conn_tx)
-			except socket.error as err:
-				if err.errno != errno.EAGAIN:
-					self.log.error( 'Error while sending data to'
-						' {}, closing connection: {}'.format(self.conn_addr, err) )
-					return self.conn_drop()
-			else:
-				self.trace('>> {!r}', self.conn_tx[:bs])
-				self.conn_tx = self.conn_tx[bs:]
+			if event & self.ev_out:
+				try: bs = conn.send(self.conn_tx)
+				except socket.error as err:
+					if err.errno != errno.EAGAIN:
+						self.log.error( 'Error while sending data to'
+							' {}, closing connection: {}'.format(self.conn_addr, err) )
+						return self.conn_drop()
+				else:
+					self.trace('>> {!r}', self.conn_tx[:bs])
+					self.conn_tx = self.conn_tx[bs:]
 
-		if event & self.ev_err:
-			self.log.error( 'Error state on connection'
-				' from {}, closing it'.format(self.conn_addr) )
-			return self.conn_drop()
+			if event & self.ev_err:
+				self.log.error( 'Error state on connection'
+					' from {}, closing it'.format(self.conn_addr) )
+				return self.conn_drop()
 
-		if not self.conn_tx: # sent everything
-			if self.conn_state == 'close': return self.conn_drop()
-			return self.unbind_ev('tx')
-		return True
+			if not self.conn_tx: # sent everything
+				if self.conn_state == 'close': return self.conn_drop()
+				return self.unbind_ev('tx')
+			return True
 
 
 	def handle_client_auth(self, lines):
@@ -372,19 +373,16 @@ class SkypeProxy(object):
 
 	def dispatch(self, *buff):
 		'Buffer raw data lines to be sent to client.'
-		buff = self.handle_pongs('skype', buff)
-		if not buff: return True
-		self.trace('+>> {!r}', buff)
-		if not self.conn or not self.conn_state:
-			self.log.warn('Dropping message(s) - no client relay: {!r}'.format(buff))
-			return False
-		self.conn_tx += ''.join(buff)
-		if not self.events.get('tx'): self.bind_tx(self.handle_tx)
-		return self.conn_state != 'close'
-
-	def dispatch_threadsafe(self, *buff):
 		with self.dispatch_lock:
-			return self.dispatch(*buff)
+			buff = self.handle_pongs('skype', buff)
+			if not buff: return True
+			self.trace('+>> {!r}', buff)
+			if not self.conn or not self.conn_state:
+				self.log.warn('Dropping message(s) - no client relay: {!r}'.format(buff))
+				return False
+			self.conn_tx += ''.join(buff)
+			if not self.events.get('tx'): self.bind_tx(self.handle_tx)
+			return self.conn_state != 'close'
 
 	def dispatch_client_ping(self):
 		'Disconnect client after too many ping fails in a row.'
