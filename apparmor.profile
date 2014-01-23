@@ -7,6 +7,7 @@
 	#include <abstractions/user-download>
 	#include <abstractions/nameservice>
 	#include <abstractions/ssl_certs>
+	#include <abstractions/X>
 	#include <abstractions/fonts>
 	#include <abstractions/site/base>
 	#include <abstractions/site/de>
@@ -40,6 +41,12 @@
 	deny /dev/video* mrw,
 	deny /sys/devices/pci*/*/usb*/*/*/idVendor r, # scan for usb mics?
 	deny /{,usr/,usr/local/}lib{,32,64,x32}/ r, # all deps should be bundled in env-dir
+
+	# abstractions/fonts grant "r" there, so avoid extra writes/warnings
+	deny /var/cache/fontconfig/ w,
+	deny /var/cache/fontconfig/** w,
+	deny @{HOME}/.{,cache/}fontconfig/ w,
+	deny @{HOME}/.{,cache/}fontconfig/** w,
 
 	network,
 
