@@ -15,12 +15,6 @@ and
 ### skyped
 
 [skyped](https://github.com/mk-fg/skype-space/tree/master/skyped) contains a
-custom rewrite of skyped.py daemon, compatible with bitlbee skype.c plugin I'm
-using.
+rewrite of skyped.py daemon, compatible with bitlbee skype.c plugin I'm using.
 
-Unfortunately, that thing being a rewrite, it's takes some work to merge it
-upstream, even though vmiklos isn't opposed to an idea (see
-[vmiklos/bitlbee#7](https://github.com/vmiklos/bitlbee/issues/7)).
-
-May rebase it on top of (currently in early development) bitlbee python bindings
-in the future, so it'd be an independent skype plugin alternative.
+See README file there for more details.
