@@ -5,21 +5,25 @@ dir=skype_env
 
 ## CLI
 usage() {
-	echo >&2 "Usage: $0 [ --debug ]"
+	echo >&2 "Usage: $0 [ --debug ] [ /path/to/skype-from-tarball ]"
 	exit 0
 }
-[[ "$#" -gt 1 || ( -n "$1" && "$1" != '--debug' ) ]] && usage
-[[ -n "$1" ]] && debug=true || debug=
 
-skype_src=/opt/skype
-[[ -e "$skype_src" ]] || skype_src=/usr/share/skype
-[[ -e "$skype_src" ]] || { echo >&2 'Failed to find skype root'; exit 1; }
+[[ "$1" = --debug ]] && { set -x; shift; }
+[[ "$#" -gt 1 ]] && usage
+[[ -n "$1" ]] && skype_src=$1 || {
+	skype_src=/opt/skype
+	[[ -e "$skype_src" ]] || skype_src=/usr/share/skype
+	[[ -e "$skype_src" ]] || { echo >&2 'Failed to find skype root'; exit 1; }
+}
 
 skype_bin="$skype_src"/skype
 file --brief --mime-type "${skype_bin}" |
-	grep -q x-executable || skype_bin=/usr/bin/skype
+	grep -q -e x-executable -e x-sharedlib\
+		|| skype_bin=/usr/bin/skype
 file --brief --mime-type "${skype_bin}" |
-	grep -q x-executable || { echo >&2 'Failed to find skype binary'; exit 1; }
+	grep -q -e x-executable -e x-sharedlib\
+		|| { echo >&2 'Failed to find skype binary'; exit 1; }
 
 echo "Building skype-env in: $dir"
 
