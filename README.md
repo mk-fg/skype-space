@@ -11,6 +11,14 @@ here](http://blog.fraggod.net/2013/01/27/skype-to-irc-gateway-on-a-headless-serv
 and
 [here](http://blog.fraggod.net/2013/01/28/headless-skype-to-irc-gateway-part-3-bitlbee-skyped.html).
 
+**Update 2015-04-16:**
+
+I've stopped using bitlbee+skype a while (about a year by now) ago, so not sure
+if this stuff still works.
+
+I have to use standalone skype occasionally though, and build_skype_env.bash
+script worked for me in that (new) use-case, as described in
+[this blog post](http://blog.fraggod.net/2015/04/11/skype-setup-on-amd64-without-multilibmultiarchchroot.html).
 
 ### skyped
 
